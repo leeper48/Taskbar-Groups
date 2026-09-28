@@ -81,13 +81,13 @@ static class Icons
         }
 
         // One app fills the tile; two to four share a 2x2 grid.
-        float inner = size * (size >= 32 ? 0.17f : 0.13f);
+        float inner = size * (size >= 32 ? InsetLarge : InsetSmall);
         if (appIcons.Count == 1)
         {
             g.DrawImage(appIcons[0], new RectangleF(inner, inner, size - 2 * inner, size - 2 * inner));
             return bmp;
         }
-        float gap = size * 0.06f;
+        float gap = size * GridGap;
         float cell = (size - 2 * inner - gap) / 2;
         for (int i = 0; i < Math.Min(4, appIcons.Count); i++)
         {
@@ -97,7 +97,21 @@ static class Icons
         return bmp;
     }
 
-    /// <summary>The frame every group picture shares: a dark rounded tile with the accent border.</summary>
+    // Sizes as a fraction of the icon. The taskbar draws every icon into the same box (28 px on Kurt's
+    // 175% taskbar, measured), so the frame can't get bigger in pixels, only bolder: 0.5.0's thin dim
+    // border on a dark tile blended into the taskbar and read small. 0.5.1 let the picture fill the
+    // frame; 0.5.2 (Kurt chose option D of four mockups next to the Claude icon) makes the border
+    // thicker and brighter and the corners squarer, closer to a solid square app icon.
+    /// <summary>Bump when the drawing changes (part of the icon file name). 3 = 0.5.2 frame.</summary>
+    public const string Style = "3";
+
+    const float Border = 0.08f, Corner = 0.14f, InsetLarge = 0.10f, InsetSmall = 0.09f, GridGap = 0.045f;
+
+    /// <summary>The frame's border: a brighter shade of the accent, so it stands out on a dark taskbar.</summary>
+    public static readonly Color FrameColor = Color.FromArgb(150, 128, 255);
+
+    /// <summary>The frame every group picture shares: a dark rounded tile with the accent border, drawn
+    /// right to the icon's edge (the border sits fully inside).</summary>
     static Bitmap FramedTile(int size, out Graphics g, out RectangleF tile)
     {
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
@@ -106,12 +120,13 @@ static class Icons
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-        float pad = Math.Max(0.5f, size * 0.04f);
+        float width = Math.Max(1f, size * Border);
+        float pad = width / 2;
         tile = new RectangleF(pad, pad, size - 2 * pad, size - 2 * pad);
-        using var path = Rounded(tile, size * 0.22f);
+        using var path = Rounded(tile, size * Corner);
         using var fill = new SolidBrush(Color.FromArgb(235, 40, 40, 52));
         g.FillPath(fill, path);
-        using var pen = new Pen(Ui.Accent, Math.Max(1f, size * 0.045f));
+        using var pen = new Pen(FrameColor, width);
         g.DrawPath(pen, path);
         return bmp;
     }
@@ -121,7 +136,7 @@ static class Icons
     {
         var bmp = FramedTile(size, out var g, out _);
         using var disposeGraphics = g;
-        float inner = size * (size >= 32 ? 0.17f : 0.13f);
+        float inner = size * (size >= 32 ? InsetLarge : InsetSmall);
         float box = size - 2 * inner;
         float scale = Math.Min(box / image.Width, box / image.Height);
         float w = image.Width * scale, h = image.Height * scale;

@@ -139,6 +139,12 @@ sealed class SettingsForm : Form
         if (store.Hover.Enabled)
             try { Watcher.EnsureRunning(); } catch { /* shown when toggled */ }
 
+        // A group whose picture is out of date (the drawing changed, see Icons.Style) gets it redrawn,
+        // and its shortcuts, including the taskbar's pinned copy, point at the new one.
+        foreach (var g in store.Groups)
+            if (!File.Exists(Shortcuts.IconFile(g)))
+                try { Shortcuts.Refresh(g); } catch { /* shown when the group is changed */ }
+
         ReloadGroups(selectId);
     }
 

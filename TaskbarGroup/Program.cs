@@ -231,6 +231,13 @@ static class SelfTest
                 Check(Shortcuts.IconFile(tools) == gridIcon, "and gives the grid's icon file again");
                 store.Save();
                 Shortcuts.Refresh(tools);
+
+                // An out-of-date picture (as after a drawing change) is redrawn when settings opens.
+                File.Delete(Shortcuts.IconFile(tools));
+                using (new SettingsForm(Store.Load())) { }
+                var refreshed = Shortcuts.Read(Directory.GetFiles(Store.ShortcutsDir, "*.lnk").Single());
+                Check(File.Exists(Shortcuts.IconFile(tools)) && refreshed.Icon == Shortcuts.IconFile(tools),
+                    "a missing group picture is redrawn when settings opens");
             }
 
             // Add Apps sources

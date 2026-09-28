@@ -45,6 +45,7 @@ sealed class GroupIcon
 
     public static string CustomDir => System.IO.Path.Combine(Store.IconsDir, "custom");
 
+    [System.Text.Json.Serialization.JsonIgnore]
     public string? CustomPath => File == null ? null
         : System.IO.Path.IsPathRooted(File) ? File : System.IO.Path.Combine(CustomDir, File);
 }

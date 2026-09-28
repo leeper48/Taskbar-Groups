@@ -31,12 +31,13 @@ static class Shortcuts
     /// path and Windows' icon cache can't keep showing the old picture.</summary>
     public static string IconFile(Group g)
     {
-        var key = Icons.EffectiveKind(g) switch
+        // Icons.Style changes when the drawing changes, so existing groups get new pictures too.
+        var key = Icons.Style + "\n" + (Icons.EffectiveKind(g) switch
         {
             GroupIcon.App => "app\n" + g.Icon.AppPath,
             GroupIcon.Custom => "custom\n" + g.Icon.File + "\n" + File.GetLastWriteTimeUtc(g.Icon.CustomPath!).Ticks,
             _ => g.Name + "\n" + string.Join("\n", g.Items.Take(4).Select(i => i.Path)),
-        };
+        });
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..8].ToLowerInvariant();
         return Path.Combine(Store.IconsDir, $"{g.Id}-{hash}.ico");
     }
