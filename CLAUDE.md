@@ -57,6 +57,7 @@ Windows 11 has no supported API for custom taskbar items or flyouts, so:
 - Kurt: 3 icons in 3D Print were mostly white. `--dump-icons <group> <dir>` (diagnostic: each item's icon at 48/256 px + shortcut details) showed the shell's blank "unknown file" page for 3 copied taskbar pins (Anycubic Slicer Next, LycheeSlicer, xTool Studio) although their targets exist and have icons. `Icons.ForPath` now resolves a .lnk itself: its icon location (index 0 through the shell, other indexes via `PrivateExtractIcons`), else its target; only a pin with neither (File Explorer's) goes through the shell item. All 6 correct afterwards.
 - An app with only small icons (eufyMake Studio) came back as a small picture in a 256 canvas with a faint frame (alpha ≤ 77) drawn by the shell. `FillCanvas` crops to pixels with alpha > 96 and scales up when the picture is under 70% of the canvas.
 - `Icons.Style` = "4", so every group picture is redrawn once when settings opens.
+- **0.6.5:** white icons again, in MHO Mods: 4 of 13 exes (MHMaterialEditor 1.3.4, MHModelEditor, MHModManager, MHUpkManager: small .NET launchers, fully local, each with 1 icon resource) came back blank from the shell's image lookup even when asked for the exe itself. `Icons.FileIcon` now reads .exe/.dll/.ico/.cpl/.icl icons straight from the file (`PrivateExtractIcons`) and uses the shell only as a fallback (and for everything else: documents, folders, shell:AppsFolder). `--dump-icons` on MHO Mods and 3D Print: all 19 correct. `Icons.Style` = "5".
 
 ## Pop-up order (0.6.4)
 

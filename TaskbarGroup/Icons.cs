@@ -19,7 +19,7 @@ static class Icons
             // own icon setting, or else its target, is asked for directly.
             if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
                 bmp = LinkIcon(path, size);
-            bmp ??= ShellImage(path, size);
+            bmp ??= FileIcon(path, 0, size);
         }
         catch { /* fall through to the generic icon */ }
         if (bmp == null)
@@ -35,11 +35,26 @@ static class Icons
         var info = Shortcuts.Read(lnk);
         string icon = Environment.ExpandEnvironmentVariables(info.Icon);
         if (icon.Length > 0 && File.Exists(icon))
-            return info.IconIndex == 0 ? ShellImage(icon, size) : ExtractAt(icon, info.IconIndex, size);
+            return FileIcon(icon, info.IconIndex, size);
         string target = Environment.ExpandEnvironmentVariables(info.Target);
         if (target.Length > 0 && (File.Exists(target) || Directory.Exists(target)))
-            return ShellImage(target, size);
+            return FileIcon(target, 0, size);
         return null;   // e.g. File Explorer's pin, which points at a shell location: the shell draws it
+    }
+
+    static readonly HashSet<string> IconFiles = new(StringComparer.OrdinalIgnoreCase) { ".exe", ".dll", ".ico", ".cpl", ".icl" };
+
+    /// <summary>
+    /// An exe / dll / ico: its icon is read straight from the file. The shell's image lookup returned the
+    /// blank "unknown file" page for 4 of the 13 exes in Kurt's MHO Mods group (small .NET launchers,
+    /// each with one icon resource; 2026-09-28), so it's only the fallback here, and the only way for
+    /// every other kind of path (documents, folders, shell:AppsFolder apps).
+    /// </summary>
+    static Bitmap? FileIcon(string path, int index, int size)
+    {
+        if (IconFiles.Contains(Path.GetExtension(path)) && File.Exists(path) && ExtractAt(path, index, size) is { } fromFile)
+            return fromFile;
+        return index == 0 ? ShellImage(path, size) : null;
     }
 
     static Bitmap? ShellImage(string path, int size)
@@ -179,7 +194,7 @@ static class Icons
     // frame; 0.5.2 (Kurt chose option D of four mockups next to the Claude icon) makes the border
     // thicker and brighter and the corners squarer, closer to a solid square app icon.
     /// <summary>Bump when the drawing changes (part of the icon file name). 3 = 0.5.2 frame.</summary>
-    public const string Style = "4";   // 4 = 0.6.1: shortcut icons resolved directly, small icons scaled up
+    public const string Style = "5";   // 5 = 0.6.5: exe/dll/ico icons read from the file first
 
     const float Border = 0.08f, Corner = 0.14f, InsetLarge = 0.10f, InsetSmall = 0.09f, GridGap = 0.045f;
 

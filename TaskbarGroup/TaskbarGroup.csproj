@@ -11,7 +11,7 @@
     <AssemblyName>TaskbarGroup</AssemblyName>
     <RootNamespace>WindowsTaskbarGroup</RootNamespace>
     <Product>Windows Taskbar Group</Product>
-    <Version>0.6.4</Version>
+    <Version>0.6.5</Version>
     <PlatformTarget>x64</PlatformTarget>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
