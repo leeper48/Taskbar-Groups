@@ -160,7 +160,7 @@ static class Shortcuts
         finally { Marshal.ReleaseComObject(link); }
     }
 
-    public record LinkInfo(string Target, string Arguments, string Icon, string? AppId);
+    public record LinkInfo(string Target, string Arguments, string Icon, string? AppId, int IconIndex = 0);
 
     public static LinkInfo Read(string file)
     {
@@ -173,7 +173,7 @@ static class Shortcuts
             var args = new StringBuilder(1024);
             link.GetArguments(args, args.Capacity);
             var icon = new StringBuilder(1024);
-            link.GetIconLocation(icon, icon.Capacity, out _);
+            link.GetIconLocation(icon, icon.Capacity, out int iconIndex);
 
             string? appId = null;
             var store = (Native.IPropertyStore)link;
@@ -181,7 +181,7 @@ static class Shortcuts
             try { if (pv.vt == Native.VT_LPWSTR) appId = Marshal.PtrToStringUni(pv.p); }
             finally { Native.PropVariantClear(ref pv); }
 
-            return new LinkInfo(target.ToString(), args.ToString(), icon.ToString(), appId);
+            return new LinkInfo(target.ToString(), args.ToString(), icon.ToString(), appId, iconIndex);
         }
         finally { Marshal.ReleaseComObject(link); }
     }

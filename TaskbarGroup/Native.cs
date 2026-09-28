@@ -148,6 +148,14 @@ static class Native
     [DllImport("shell32.dll")]
     public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+
+    public static Rectangle WindowRect(IntPtr hwnd) =>
+        GetWindowRect(hwnd, out var r) ? Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom) : Rectangle.Empty;
+
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int cmd);
@@ -200,6 +208,10 @@ static class Native
         public ushort biPlanes, biBitCount;
         public int biCompression, biSizeImage, biXPelsPerMeter, biYPelsPerMeter, biClrUsed, biClrImportant;
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint PrivateExtractIcons(string file, int index, int cx, int cy, IntPtr[] icons, uint[] ids, uint count, uint flags);
+    [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
 
     [DllImport("gdi32.dll")] public static extern int GetObject(IntPtr h, int size, out BITMAP bm);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr h);

@@ -52,6 +52,32 @@ Windows 11 has no supported API for custom taskbar items or flyouts, so:
 - **0.5.1 margins (Kurt: the group icon looked ~75% of its neighbors):** measured on a screen capture of his taskbar (175%): our tile's border box 26 × 26 px vs Discord's disc 28 × 28, so the frame was fine; the picture inside was ~17 px (~60%), because the dark tile blends into the dark taskbar. Outer pad 4% → 2%, inset inside the border 17% → 9% (small sizes 13% → 8%), grid gap 6% → 4.5%. `Icons.Style` (now "2") is part of the icon file name, and settings redraws any group picture whose file is missing when it opens (and repoints the shortcuts and the pinned copy), so existing groups get the new drawing.
 - **0.5.2 frame (Kurt: the Claude icon next to the Graphics group looked bigger):** measured again: both are exactly 28 × 28 px in the same spot; the taskbar draws every icon into that box, so the outline can't grow. Claude reads bigger because it's a solid bright square with small corners. Kurt picked option D of four mockups: border 4.5% → 8% (drawn fully inside the icon, no outer pad), corners 22% → 14%, border color `Icons.FrameColor` (150,128,255), brighter than `Ui.Accent`; picture inset 10% (small sizes 9%). `Icons.Style` = "3". `GroupIcon.CustomPath` is now `[JsonIgnore]` (it was written to groups.json).
 
+## Icon loading fixes (0.6.1)
+
+- Kurt: 3 icons in 3D Print were mostly white. `--dump-icons <group> <dir>` (diagnostic: each item's icon at 48/256 px + shortcut details) showed the shell's blank "unknown file" page for 3 copied taskbar pins (Anycubic Slicer Next, LycheeSlicer, xTool Studio) although their targets exist and have icons. `Icons.ForPath` now resolves a .lnk itself: its icon location (index 0 through the shell, other indexes via `PrivateExtractIcons`), else its target; only a pin with neither (File Explorer's) goes through the shell item. All 6 correct afterwards.
+- An app with only small icons (eufyMake Studio) came back as a small picture in a 256 canvas with a faint frame (alpha ≤ 77) drawn by the shell. `FillCanvas` crops to pixels with alpha > 96 and scales up when the picture is under 70% of the canvas.
+- `Icons.Style` = "4", so every group picture is redrawn once when settings opens.
+
+## Pop-up order (0.6.4)
+
+- Kurt: the most important apps belong on the row nearest the taskbar, where the mouse is. The top of a group's list is item 1; when the pop-up opens above its anchor (bottom taskbar, or Preview) rows fill from the bottom up (`PopupForm.bottomUp`, `CellRect`), left to right; above a top taskbar, top down. Up/Down keys follow the visual direction; 1–9 stay in list order. The settings hint says the top of the list sits nearest the taskbar.
+
+## Pins outside the pinned folder (0.6.3)
+
+- Kurt: FreeFileSync (pinned) was missing from On the Taskbar. Windows keeps some pins as a reference to another shortcut, not as a .lnk in User Pinned\TaskBar: FreeFileSync's and Blender 5.1's are in `User Pinned\ImplicitAppShortcuts\<hash>\`, which also holds unpinned apps (4 other Blender versions). `AppSources.Pinned` now also takes the taskbar's own pinned buttons (UI Automation names ending " pinned", English only), skips those already covered by the folder (by app ID, target or name) and our groups, and matches each by app ID to a shortcut in ImplicitAppShortcuts or either Start menu (copied like other pins), an existing file, or `shell:AppsFolder\<id>` (Store apps: Claude, Copilot, QuickLook). On Kurt's machine: 16 pins, 5 of them found this way.
+- Unpinning those (`Candidate.PinnedAppId`): the same shell verb on their shortcut or AppsFolder entry (Copilot and QuickLook list "Unpin from taskbar"); done when the taskbar no longer shows a pinned button with that app ID. Not yet tried on the real taskbar.
+
+## Tooltips and pinning (0.6.2)
+
+- Kurt: "the tool tips flicker a lot" (in the app's windows). Likely cause: the standard automatic tooltip moves a tip that doesn't fit below the mouse up over the mouse (bottom-bar buttons, the pop-up by the taskbar), the control sees the mouse leave, the tip hides, and so on in a loop; the pop-up also re-set its tip text on every cell change. Now `Ui.Tip` / `Ui.ShowTip` / `Ui.HideTip` place tips by hand: below the control if it fits on the screen, else above, never over it (tall lists anchor at the mouse), once per hover after 450 ms. The pop-up shows one tip per cell after a rest. Self-test: a bottom-edge button's tip sits above it (the tooltip window's class is `WindowsForms10.tooltips_class32…`).
+- Pin to Taskbar no longer shows an instructions box (Kurt): the shortcut is selected in Explorer and the status line says what to do.
+
+## Default app (0.6.0)
+
+- `Group.DefaultApp` (an item's Path; `DefaultItem()` = null when that item left the group). Settings: Set as Default / Clear Default under the app list; the row shows a gold "★ Default", the group row "click starts <app>", and the pop-up a ★ on that app.
+- A click on the pinned button (`--group <id>`) with a default and **no Shift** starts the default right in that process (it holds the click's foreground right) and sends `close <id>` to the helper, so an open hover pop-up of that group closes. Shift+click, or no default, goes the old way (helper `click`, or its own pop-up). Hover still shows all apps.
+- `AppItem.Start()` / `StartOrReport()` are the one way items are started (pop-up and click).
+
 ## Conventions (carried over from Kurt's other projects)
 
 - C# / .NET 8 (`net8.0-windows`), WinForms, x64. Sizes in code are for 100% scaling, multiplied by the window's DPI (`S()` in SettingsForm, `s` in PopupForm); WinForms auto-scaling left rows unscaled at 175%.

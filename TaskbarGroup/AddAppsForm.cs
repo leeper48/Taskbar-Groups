@@ -153,7 +153,7 @@ sealed class AddAppsForm : Form
     void Toggle(int index)
     {
         var c = shown[index];
-        if (AppSources.InGroup(c, group) && !c.CopyLink) return;  // an added pin can still be ticked, to unpin it
+        if (AppSources.InGroup(c, group) && !c.CopyLink && c.PinnedAppId == null) return;  // an added pin can still be ticked, to unpin it
         if (!ticked.Remove(c.Path)) ticked.Add(c.Path);
         list.Invalidate(list.GetItemRectangle(index));
         UpdateStatus();
@@ -233,7 +233,7 @@ sealed class AddAppsForm : Form
         if (unpinBox.Checked && pins.Count > 0)
         {
             Cursor = Cursors.WaitCursor;
-            var failed = pins.Where(c => !AppSources.Unpin(c.Path)).ToList();
+            var failed = pins.Where(c => !AppSources.Unpin(c)).ToList();
             Cursor = Cursors.Default;
             int done = pins.Count - failed.Count;
             UnpinReport = failed.Count == 0
@@ -251,7 +251,7 @@ sealed class AddAppsForm : Form
     }
 
     IEnumerable<Candidate> TickedPins() =>
-        ticked.Select(p => known.TryGetValue(p, out var c) ? c : null).OfType<Candidate>().Where(c => c.CopyLink);
+        ticked.Select(p => known.TryGetValue(p, out var c) ? c : null).OfType<Candidate>().Where(c => c.CopyLink || c.PinnedAppId != null);
 
     void Browse()
     {

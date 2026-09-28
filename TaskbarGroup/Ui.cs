@@ -13,15 +13,67 @@ static class Ui
     public static readonly Color Accent = Color.FromArgb(124, 92, 255);
     public static readonly Color AccentHover = Color.FromArgb(146, 120, 255);
 
-    public static readonly ToolTip Tips = new()
-    {
-        InitialDelay = 450, ReshowDelay = 100, AutoPopDelay = 15000, ShowAlways = true,
-    };
+    // ---------- Tooltips ----------
+    // Placed by hand, never under the mouse (0.6.2, Kurt: "the tool tips flicker a lot"). With the
+    // standard automatic tooltip, a tip that doesn't fit below the mouse (buttons in the bottom bar,
+    // the pop-up by the taskbar) is moved up over the mouse; the control then sees the mouse leave,
+    // the tip hides, the mouse is back, the tip shows: a loop. Here a tip goes below its control when
+    // there's room, else above it, and is shown once per hover.
 
+    static readonly ToolTip Tips = new() { UseAnimation = false, UseFading = false, ShowAlways = true };
+    static readonly Dictionary<Control, string> tipTexts = new();
+    static readonly System.Windows.Forms.Timer tipTimer = new() { Interval = 450 };
+    static Control? tipPending, tipShowing;
+
+    static Ui()
+    {
+        tipTimer.Tick += (_, _) =>
+        {
+            tipTimer.Stop();
+            if (tipPending is not { IsDisposed: false } c || !tipTexts.TryGetValue(c, out var text) || text.Length == 0) return;
+            var local = c.PointToClient(Cursor.Position);
+            if (!c.ClientRectangle.Contains(local)) return;
+            // Tall controls (lists): anchor at the mouse rather than at the whole control.
+            ShowTip(c, text, c.Height < 80 ? c.ClientRectangle : new Rectangle(local.X - 10, local.Y - 12, 20, 24));
+        };
+    }
+
+    /// <summary>Gives a control a tooltip (or changes its text).</summary>
     public static T Tip<T>(T control, string text) where T : Control
     {
-        Tips.SetToolTip(control, text);
+        if (!tipTexts.ContainsKey(control))
+        {
+            control.MouseEnter += (_, _) => { tipPending = control; tipTimer.Stop(); tipTimer.Start(); };
+            control.MouseLeave += (_, _) => { if (tipPending == control) tipPending = null; HideTip(control); };
+            control.MouseDown += (_, _) => { tipPending = null; HideTip(control); };
+            control.Disposed += (_, _) => { tipTexts.Remove(control); if (tipPending == control) tipPending = null; };
+        }
+        tipTexts[control] = text;
         return control;
+    }
+
+    /// <summary>Shows a tip for part of a control (<paramref name="anchor"/> in its client coordinates):
+    /// below it if it fits on the screen, else above it, so it never covers the mouse.</summary>
+    public static void ShowTip(Control owner, string text, Rectangle anchor)
+    {
+        var size = TextRenderer.MeasureText(text, SystemFonts.StatusFont ?? Control.DefaultFont) + new Size(16, 12);
+        var screen = Screen.FromControl(owner).WorkingArea;
+        int gap = 6;
+        var p = new Point(anchor.Left, anchor.Bottom + gap);
+        if (owner.PointToScreen(p).Y + size.Height > screen.Bottom) p = new Point(anchor.Left, anchor.Top - size.Height - gap);
+        var s = owner.PointToScreen(p);
+        if (s.X + size.Width > screen.Right) p.X -= s.X + size.Width - screen.Right;
+        if (s.X < screen.Left) p.X += screen.Left - s.X;
+        if (tipShowing != null && tipShowing != owner && !tipShowing.IsDisposed) Tips.Hide(tipShowing);
+        Tips.Show(text, owner, p, 15000);
+        tipShowing = owner;
+    }
+
+    public static void HideTip(Control owner)
+    {
+        if (tipShowing != owner) return;
+        if (!owner.IsDisposed) Tips.Hide(owner);
+        tipShowing = null;
     }
 
     public static Button FlatButton(string text, Action onClick, string tip) =>

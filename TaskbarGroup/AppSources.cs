@@ -4,7 +4,7 @@ namespace WindowsTaskbarGroup;
 
 /// <summary>An app offered by Add Apps. <paramref name="CopyLink"/>: Path is a shortcut that
 /// belongs to someone else (a taskbar pin) and is copied into data\Links when added.</summary>
-sealed record Candidate(string Name, string Path, string Detail, bool CopyLink = false);
+sealed record Candidate(string Name, string Path, string Detail, bool CopyLink = false, string? PinnedAppId = null);
 
 /// <summary>Where Add Apps finds apps: windows that are open now, and the taskbar's pins.</summary>
 static class AppSources
@@ -74,29 +74,95 @@ static class AppSources
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         @"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar");
 
-    /// <summary>The taskbar's pinned shortcuts (the folder Windows keeps them in), without our own
-    /// group shortcuts. Store apps pinned to the taskbar aren't kept there; they show up under
-    /// Running Apps while they're open.</summary>
+    /// <summary>
+    /// Everything pinned to the taskbar, without our own group shortcuts:
+    /// 1. the shortcuts in the pinned folder (User Pinned\TaskBar);
+    /// 2. pinned buttons the taskbar shows that have no shortcut there (0.6.3, Kurt: FreeFileSync was
+    ///    missing). Windows keeps those as a reference to another shortcut: FreeFileSync's is in
+    ///    User Pinned\ImplicitAppShortcuts, which also holds apps that aren't pinned (4 of Kurt's 5
+    ///    Blender versions), so the taskbar's own buttons (UI Automation, "... pinned") say which apps
+    ///    are pinned, and each is matched by app ID to a shortcut there or in the Start menu; Store apps
+    ///    (Copilot, QuickLook) become shell:AppsFolder\&lt;app id&gt;.
+    /// </summary>
     public static List<Candidate> Pinned()
     {
         var list = new List<Candidate>();
-        if (!Directory.Exists(PinnedDir)) return list;
-        foreach (var file in Directory.GetFiles(PinnedDir, "*.lnk"))
-        {
-            string detail;
-            try
+        var covered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // app ids, targets and names of listed pins
+        if (Directory.Exists(PinnedDir))
+            foreach (var file in Directory.GetFiles(PinnedDir, "*.lnk"))
             {
-                var info = Shortcuts.Read(file);
-                if (info.Arguments.StartsWith("--group ", StringComparison.Ordinal) &&
-                    Path.GetFileName(info.Target).Equals("TaskbarGroup.exe", StringComparison.OrdinalIgnoreCase)) continue;
-                detail = info.Target.Length > 0
-                    ? info.Target + (info.Arguments.Length > 0 ? " " + info.Arguments : "")
-                    : Path.GetFileName(file);
+                string detail;
+                try
+                {
+                    var info = Shortcuts.Read(file);
+                    if (IsOurGroup(info)) continue;
+                    detail = info.Target.Length > 0
+                        ? info.Target + (info.Arguments.Length > 0 ? " " + info.Arguments : "")
+                        : Path.GetFileName(file);
+                    if (info.AppId != null) covered.Add(info.AppId);
+                    if (info.Target.Length > 0) covered.Add(info.Target);
+                }
+                catch { detail = Path.GetFileName(file); }
+                covered.Add(Path.GetFileNameWithoutExtension(file));
+                list.Add(new Candidate(Path.GetFileNameWithoutExtension(file), file, detail, CopyLink: true));
             }
-            catch { detail = Path.GetFileName(file); }
-            list.Add(new Candidate(Path.GetFileNameWithoutExtension(file), file, detail, CopyLink: true));
+
+        List<TaskbarButton> buttons;
+        try { buttons = TaskbarButtons.All(); } catch { buttons = new(); }
+        Dictionary<string, string>? linksByAppId = null;
+        foreach (var b in buttons.Where(IsPinned).GroupBy(b => b.AppId, StringComparer.OrdinalIgnoreCase).Select(g => g.First()))
+        {
+            string name = ButtonName(b);
+            if (b.GroupId != null || covered.Contains(b.AppId) || covered.Contains(name)) continue;
+            linksByAppId ??= LinksByAppId();
+            Candidate? c = null;
+            if (linksByAppId.TryGetValue(b.AppId, out var lnk))
+                c = new Candidate(name, lnk, "Pinned  ·  " + lnk, CopyLink: true, PinnedAppId: b.AppId);
+            else if (File.Exists(b.AppId))
+                c = new Candidate(name, b.AppId, "Pinned  ·  " + b.AppId, PinnedAppId: b.AppId);
+            else if (Native.ShellDisplayName(@"shell:AppsFolder\" + b.AppId) is { } display)
+                c = new Candidate(display, @"shell:AppsFolder\" + b.AppId, "Pinned Store app  ·  " + b.AppId, PinnedAppId: b.AppId);
+            if (c == null) continue;
+            covered.Add(b.AppId);
+            list.Add(c);
         }
         return list.OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    static bool IsOurGroup(Shortcuts.LinkInfo info) =>
+        info.Arguments.StartsWith("--group ", StringComparison.Ordinal) &&
+        Path.GetFileName(info.Target).Equals("TaskbarGroup.exe", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The taskbar names a pinned button "&lt;app&gt; pinned" or "&lt;app&gt; - 2 running windows pinned".</summary>
+    static bool IsPinned(TaskbarButton b) => b.Name.EndsWith(" pinned", StringComparison.OrdinalIgnoreCase);
+
+    static string ButtonName(TaskbarButton b) =>
+        System.Text.RegularExpressions.Regex.Replace(b.Name, @"( - \d+ running windows?)?( pinned)?$", "").Trim();
+
+    /// <summary>Shortcuts that carry an explicit app ID: ImplicitAppShortcuts and both Start menus.</summary>
+    static Dictionary<string, string> LinksByAppId()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var dirs = new[]
+        {
+            Path.Combine(Path.GetDirectoryName(PinnedDir)!, "ImplicitAppShortcuts"),
+            Environment.GetFolderPath(Environment.SpecialFolder.Programs),
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),
+        };
+        foreach (var dir in dirs.Where(Directory.Exists))
+            foreach (var f in SafeFiles(dir))
+                try
+                {
+                    if (Shortcuts.Read(f).AppId is { Length: > 0 } id && !map.ContainsKey(id)) map[id] = f;
+                }
+                catch { /* unreadable shortcut */ }
+        return map;
+    }
+
+    static IEnumerable<string> SafeFiles(string dir)
+    {
+        try { return Directory.EnumerateFiles(dir, "*.lnk", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }).ToList(); }
+        catch { return Array.Empty<string>(); }
     }
 
     public static string LinksDir => Path.Combine(Store.Home, "Links");
@@ -126,25 +192,40 @@ static class AppSources
     /// then the menu entry by its English caption. Success = Windows removed the pin's .lnk from the
     /// pinned folder within 3 s.
     /// </summary>
-    public static bool Unpin(string pinnedLink)
+    public static bool Unpin(Candidate c)
     {
-        if (!File.Exists(pinnedLink)) return true;
+        if (c.PinnedAppId == null)
+        {
+            if (!File.Exists(c.Path)) return true;
+            return InvokeUnpin(Path.GetDirectoryName(c.Path)!, Path.GetFileName(c.Path), () => !File.Exists(c.Path));
+        }
+        // A pin kept outside the pinned folder: the verb on its shortcut (or on the Start menu's app
+        // entry); done when the taskbar no longer shows the app as pinned.
+        bool Unpinned() => !TaskbarButtons.All().Any(b => IsPinned(b) &&
+            string.Equals(b.AppId, c.PinnedAppId, StringComparison.OrdinalIgnoreCase));
+        return c.Path.StartsWith(@"shell:AppsFolder\", StringComparison.OrdinalIgnoreCase)
+            ? InvokeUnpin("shell:AppsFolder", c.PinnedAppId, Unpinned)
+            : InvokeUnpin(Path.GetDirectoryName(c.Path)!, Path.GetFileName(c.Path), Unpinned);
+    }
+
+    static bool InvokeUnpin(string folder, string itemName, Func<bool> done)
+    {
         var type = Type.GetTypeFromProgID("Shell.Application");
         if (type == null) return false;
         dynamic shell = Activator.CreateInstance(type)!;
         try
         {
-            dynamic? item = shell.Namespace(Path.GetDirectoryName(pinnedLink)).ParseName(Path.GetFileName(pinnedLink));
+            dynamic? item = shell.Namespace(folder)?.ParseName(itemName);
             if (item == null) return false;
             try { item.InvokeVerb("taskbarunpin"); } catch { /* try the menu entry */ }
-            if (WaitGone(pinnedLink)) return true;
+            if (WaitFor(done)) return true;
             foreach (dynamic verb in item.Verbs())
             {
                 string name = ((string)verb.Name).Replace("&", "");
                 if (name.Equals("Unpin from taskbar", StringComparison.OrdinalIgnoreCase))
                 {
                     verb.DoIt();
-                    return WaitGone(pinnedLink);
+                    return WaitFor(done);
                 }
             }
             return false;
@@ -153,14 +234,14 @@ static class AppSources
         finally { System.Runtime.InteropServices.Marshal.ReleaseComObject(shell); }
     }
 
-    static bool WaitGone(string file)
+    static bool WaitFor(Func<bool> done)
     {
         for (int i = 0; i < 30; i++)
         {
-            if (!File.Exists(file)) return true;
+            if (done()) return true;
             Thread.Sleep(100);
         }
-        return !File.Exists(file);
+        return done();
     }
 
     public static bool InGroup(Candidate c, Group g) => g.Items.Any(i =>

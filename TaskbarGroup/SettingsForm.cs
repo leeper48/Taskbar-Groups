@@ -18,6 +18,7 @@ sealed class SettingsForm : Form
     readonly Dictionary<string, Bitmap> iconCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, Bitmap> tileCache = new();
     readonly List<Control> needGroup = new();
+    readonly Button defaultButton;
     readonly CheckBox hoverBox = new()
     {
         Text = "Open a group when the mouse rests on its taskbar button",
@@ -54,6 +55,9 @@ sealed class SettingsForm : Form
         appList.ItemHeight = S(44);
         appList.DrawItem += DrawApp;
         appList.DoubleClick += (_, _) => RenameApp();
+        appList.SelectedIndexChanged += (_, _) => RefreshDefaultButton();
+        defaultButton = Ui.FlatButton("Set as Default", ToggleDefault,
+            "A click on the group's taskbar button starts this app right away; hover (or Shift+click) still shows all apps");
         appList.AllowDrop = true;
         appList.DragEnter += (_, e) => e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true && Current != null
             ? DragDropEffects.Copy : DragDropEffects.None;
@@ -83,13 +87,14 @@ sealed class SettingsForm : Form
         right.Controls.Add(Buttons(
             NeedsGroup(Ui.AccentButton("Add Apps…", AddApps, "Pick from running apps or apps pinned to the taskbar, or browse for files")),
             NeedsGroup(Ui.FlatButton("Add Folder…", AddFolder, "Add a folder; clicking it opens the folder")),
+            NeedsGroup(defaultButton),
             NeedsGroup(Ui.FlatButton("Rename", RenameApp, "Rename the selected app (the name shown in the pop-up)")),
             NeedsGroup(Ui.FlatButton("Remove", RemoveApp, "Remove the selected app from the group (Delete)")),
             NeedsGroup(Ui.FlatButton("▲", () => MoveApp(-1), "Move the app up")),
             NeedsGroup(Ui.FlatButton("▼", () => MoveApp(1), "Move the app down"))), 0, 3);
         right.Controls.Add(new Label
         {
-            Text = "Tip: drag apps, shortcuts, files or folders onto the list to add them.",
+            Text = "Tip: the top of this list sits nearest the taskbar in the pop-up. Drag files or folders here to add them.",
             AutoSize = false, AutoEllipsis = true, Dock = DockStyle.Fill, Height = S(24), ForeColor = Ui.SubText, Margin = new Padding(0, 0, 0, 4),
         }, 0, 4);
 
@@ -108,7 +113,7 @@ sealed class SettingsForm : Form
             Padding = new Padding(10, 8, 10, 2), WrapContents = false,
         };
         bar.Controls.Add(NeedsGroup(Ui.AccentButton("Pin to Taskbar…", PinToTaskbar,
-            "Make the group's shortcut and show how to pin it to the taskbar")));
+            "Make the group's shortcut and select it in Explorer, ready to pin to the taskbar")));
         bar.Controls.Add(NeedsGroup(Ui.FlatButton("Change Icon…", ChangeIcon,
             "Show the grid of apps, one app's icon, or your own picture on the group's taskbar button")));
         bar.Controls.Add(NeedsGroup(Ui.FlatButton("Preview", Preview, "Open the group's pop-up here, as a click on its taskbar button would")));
@@ -199,7 +204,9 @@ sealed class SettingsForm : Form
         return bmp;
     }
 
-    void DrawRow(DrawItemEventArgs e, Bitmap icon, string title, string sub)
+    static readonly Color Gold = Color.FromArgb(255, 196, 64);
+
+    void DrawRow(DrawItemEventArgs e, Bitmap icon, string title, string sub, string? badge = null)
     {
         if (e.Index < 0) return;
         bool selected = (e.State & DrawItemState.Selected) != 0;
@@ -218,6 +225,14 @@ sealed class SettingsForm : Form
         var titleRect = new Rectangle(x, e.Bounds.Y + 3, e.Bounds.Right - x - 6, h / 2);
         var subRect = new Rectangle(x, e.Bounds.Y + h / 2, e.Bounds.Right - x - 6, h / 2 - 3);
         const TextFormatFlags flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
+        if (badge != null)
+        {
+            using var bold = new Font(Font, FontStyle.Bold);
+            var size = TextRenderer.MeasureText(e.Graphics, badge, bold);
+            TextRenderer.DrawText(e.Graphics, badge, bold,
+                new Rectangle(titleRect.Right - size.Width, titleRect.Y, size.Width, titleRect.Height), Gold, flags);
+            titleRect.Width -= size.Width + 8;
+        }
         TextRenderer.DrawText(e.Graphics, title, Font, titleRect, Ui.Text, flags);
         using var small = new Font(Font.FontFamily, Font.Size * 0.88f);
         TextRenderer.DrawText(e.Graphics, sub, small, subRect, Ui.SubText, flags | TextFormatFlags.PathEllipsis);
@@ -227,7 +242,8 @@ sealed class SettingsForm : Form
     {
         if (e.Index < 0 || e.Index >= store.Groups.Count) return;
         var g = store.Groups[e.Index];
-        DrawRow(e, Tile(g), g.Name, g.Items.Count == 1 ? "1 app" : $"{g.Items.Count} apps");
+        string apps = g.Items.Count == 1 ? "1 app" : $"{g.Items.Count} apps";
+        DrawRow(e, Tile(g), g.Name, g.DefaultItem() is { } d ? $"{apps}  ·  click starts {d.Name}" : apps);
     }
 
     void DrawApp(object? sender, DrawItemEventArgs e)
@@ -236,7 +252,8 @@ sealed class SettingsForm : Form
         if (g == null || e.Index < 0 || e.Index >= g.Items.Count) return;
         var item = g.Items[e.Index];
         DrawRow(e, AppIcon(item.Path), item.Name,
-            item.Path + (string.IsNullOrEmpty(item.Arguments) ? "" : " " + item.Arguments));
+            item.Path + (string.IsNullOrEmpty(item.Arguments) ? "" : " " + item.Arguments),
+            ReferenceEquals(g.DefaultItem(), item) ? "★ Default" : null);
     }
 
     // ---------- State ----------
@@ -403,6 +420,32 @@ sealed class SettingsForm : Form
         Changed(g, i);
     }
 
+    void RefreshDefaultButton()
+    {
+        var g = Current;
+        int i = appList.SelectedIndex;
+        bool isDefault = g != null && i >= 0 && i < g.Items.Count && ReferenceEquals(g.DefaultItem(), g.Items[i]);
+        defaultButton.Text = isDefault ? "Clear Default" : "Set as Default";
+        Ui.Tip(defaultButton, isDefault
+            ? "A click on the group's taskbar button opens the pop-up again"
+            : "A click on the group's taskbar button starts this app right away; hover (or Shift+click) still shows all apps");
+    }
+
+    void ToggleDefault()
+    {
+        var g = Current;
+        int i = appList.SelectedIndex;
+        if (g == null) return;
+        if (i < 0) { SetStatus("Select an app first."); return; }
+        var item = g.Items[i];
+        bool clear = ReferenceEquals(g.DefaultItem(), item);
+        g.DefaultApp = clear ? null : item.Path;
+        Changed(g, i);
+        SetStatus(clear
+            ? $"No default: a click on \"{g.Name}\" opens the pop-up."
+            : $"A click on \"{g.Name}\" now starts {item.Name}. Hover or Shift+click shows all apps.");
+    }
+
     void RemoveApp()
     {
         var g = Current;
@@ -461,15 +504,9 @@ sealed class SettingsForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        SetStatus($"Shortcut for \"{g.Name}\" created.");
+        // Kurt (0.6.2): no instructions box, just the shortcut selected in Explorer and a hint here.
         Process.Start("explorer.exe", $"/select,\"{made[0]}\"");
-        MessageBox.Show(this,
-            $"The shortcut for \"{g.Name}\" is selected in the Explorer window that just opened.\n\n" +
-            "To pin it: right-click it, choose Show more options, then Pin to taskbar.\n\n" +
-            "It's also in the Start menu under Taskbar Groups (right-click, More, Pin to taskbar).\n\n" +
-            "Changes you make to the group later update the shortcut. If the taskbar keeps showing an old " +
-            "picture, unpin and pin it again.",
-            "Pin to Taskbar", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        SetStatus($"Shortcut for \"{g.Name}\" is selected in Explorer: right-click it, Show more options, Pin to taskbar.");
     }
 
     void ChangeIcon()

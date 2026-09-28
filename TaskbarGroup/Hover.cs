@@ -221,6 +221,10 @@ sealed class Watcher : Form
             string text = Marshal.PtrToStringUni(cds.lpData, cds.cbData / 2);
             m.Result = (IntPtr)1;
             if (text.StartsWith("click ", StringComparison.Ordinal)) ClickGroup(text[6..]);
+            else if (text.StartsWith("close ", StringComparison.Ordinal))
+            {
+                if (PopupOpen && popupGroup == text[6..]) BeginInvoke(() => popup?.Close());
+            }
             else if (text == "reload") delayMs = Store.Load().Hover.DelayMs;
             else if (text == "quit") BeginInvoke(Close);
             return;

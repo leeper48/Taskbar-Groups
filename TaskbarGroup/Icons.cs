@@ -10,28 +10,104 @@ static class Icons
     /// <paramref name="size"/> pixels, with alpha. Falls back to the generic application icon.</summary>
     public static Bitmap ForPath(string path, int size)
     {
+        path = Environment.ExpandEnvironmentVariables(path);
+        Bitmap? bmp = null;
         try
         {
-            var iid = typeof(Native.IShellItemImageFactory).GUID;
-            if (Native.SHCreateItemFromParsingName(Environment.ExpandEnvironmentVariables(path),
-                    IntPtr.Zero, ref iid, out object obj) == 0)
-            {
-                var factory = (Native.IShellItemImageFactory)obj;
-                try
-                {
-                    if (factory.GetImage(new Native.SIZE { cx = size, cy = size },
-                            Native.SIIGBF_ICONONLY | Native.SIIGBF_BIGGERSIZEOK, out IntPtr hbm) == 0)
-                    {
-                        try { return FromHBitmap(hbm); }
-                        finally { Native.DeleteObject(hbm); }
-                    }
-                }
-                finally { Marshal.ReleaseComObject(factory); }
-            }
+            // Shortcuts: the shell returned the blank "unknown file" picture for some copied taskbar pins
+            // (3 of Kurt's 6 in 3D Print, 2026-09-28) although their targets have icons, so the shortcut's
+            // own icon setting, or else its target, is asked for directly.
+            if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                bmp = LinkIcon(path, size);
+            bmp ??= ShellImage(path, size);
         }
         catch { /* fall through to the generic icon */ }
-        using var fallback = new Icon(SystemIcons.Application, size, size);
-        return fallback.ToBitmap();
+        if (bmp == null)
+        {
+            using var fallback = new Icon(SystemIcons.Application, size, size);
+            return fallback.ToBitmap();
+        }
+        return FillCanvas(bmp, size);
+    }
+
+    static Bitmap? LinkIcon(string lnk, int size)
+    {
+        var info = Shortcuts.Read(lnk);
+        string icon = Environment.ExpandEnvironmentVariables(info.Icon);
+        if (icon.Length > 0 && File.Exists(icon))
+            return info.IconIndex == 0 ? ShellImage(icon, size) : ExtractAt(icon, info.IconIndex, size);
+        string target = Environment.ExpandEnvironmentVariables(info.Target);
+        if (target.Length > 0 && (File.Exists(target) || Directory.Exists(target)))
+            return ShellImage(target, size);
+        return null;   // e.g. File Explorer's pin, which points at a shell location: the shell draws it
+    }
+
+    static Bitmap? ShellImage(string path, int size)
+    {
+        var iid = typeof(Native.IShellItemImageFactory).GUID;
+        if (Native.SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out object obj) != 0) return null;
+        var factory = (Native.IShellItemImageFactory)obj;
+        try
+        {
+            if (factory.GetImage(new Native.SIZE { cx = size, cy = size },
+                    Native.SIIGBF_ICONONLY | Native.SIIGBF_BIGGERSIZEOK, out IntPtr hbm) != 0) return null;
+            try { return FromHBitmap(hbm); }
+            finally { Native.DeleteObject(hbm); }
+        }
+        finally { Marshal.ReleaseComObject(factory); }
+    }
+
+    /// <summary>The icon at <paramref name="index"/> in an exe / dll / ico (negative = resource id).</summary>
+    static Bitmap? ExtractAt(string file, int index, int size)
+    {
+        var handles = new IntPtr[1];
+        var ids = new uint[1];
+        if (Native.PrivateExtractIcons(file, index, size, size, handles, ids, 1, 0) != 1 || handles[0] == IntPtr.Zero)
+            return null;
+        try
+        {
+            using var icon = Icon.FromHandle(handles[0]);
+            return icon.ToBitmap();
+        }
+        finally { Native.DestroyIcon(handles[0]); }
+    }
+
+    /// <summary>An app that ships only small icons comes back as a small picture in the middle of a big
+    /// transparent canvas (eufyMake Studio at 256 px); crop to the picture and scale it to the full size.</summary>
+    static Bitmap FillCanvas(Bitmap bmp, int size)
+    {
+        if (bmp.Width != size || bmp.Height != size) return bmp;
+        int minX = size, minY = size, maxX = -1, maxY = -1;
+        var data = bmp.LockBits(new Rectangle(0, 0, size, size), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        try
+        {
+            var row = new byte[size * 4];
+            for (int y = 0; y < size; y++)
+            {
+                Marshal.Copy(data.Scan0 + y * data.Stride, row, 0, row.Length);
+                for (int x = 0; x < size; x++)
+                    if (row[x * 4 + 3] > 96)   // the frame the shell draws around a blown-up small icon is < 80
+                    {
+                        if (x < minX) minX = x; if (x > maxX) maxX = x;
+                        if (y < minY) minY = y; if (y > maxY) maxY = y;
+                    }
+            }
+        }
+        finally { bmp.UnlockBits(data); }
+        if (maxX < 0) return bmp;
+        int side = Math.Max(maxX - minX + 1, maxY - minY + 1);
+        if (side >= size * 0.7) return bmp;
+        float cx = (minX + maxX + 1) / 2f, cy = (minY + maxY + 1) / 2f;
+        var scaled = new Bitmap(size, size, PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(scaled))
+        {
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(bmp, new Rectangle(0, 0, size, size),
+                new RectangleF(cx - side / 2f, cy - side / 2f, side, side), GraphicsUnit.Pixel);
+        }
+        bmp.Dispose();
+        return scaled;
     }
 
     /// <summary>Copies a 32-bit shell HBITMAP with its alpha channel (Image.FromHbitmap drops it).</summary>
@@ -103,7 +179,7 @@ static class Icons
     // frame; 0.5.2 (Kurt chose option D of four mockups next to the Claude icon) makes the border
     // thicker and brighter and the corners squarer, closer to a solid square app icon.
     /// <summary>Bump when the drawing changes (part of the icon file name). 3 = 0.5.2 frame.</summary>
-    public const string Style = "3";
+    public const string Style = "4";   // 4 = 0.6.1: shortcut icons resolved directly, small icons scaled up
 
     const float Border = 0.08f, Corner = 0.14f, InsetLarge = 0.10f, InsetSmall = 0.09f, GridGap = 0.045f;
 

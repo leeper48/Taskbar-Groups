@@ -16,22 +16,26 @@ sealed class PopupForm : Form
     readonly List<Bitmap> icons;
     readonly float s;
     readonly int pad, header, iconPx, cols, rows;
+    readonly bool bottomUp;
     readonly Size cell;
     Rectangle gearRect;
     int hover = -1;
     bool gearHover;
     string tipText = "";
+    readonly System.Windows.Forms.Timer tipTimer = new() { Interval = 450 };
     Rectangle? hoverZone;
     readonly System.Windows.Forms.Timer leaveTimer = new() { Interval = 50 };
     DateTime lastInside = DateTime.Now;
 
     public bool IsHover => hoverZone != null;
+    readonly AppItem? defaultItem;
 
     public PopupForm(Group group, Point anchor, bool keepOpen = false, Rectangle? hoverZone = null)
     {
         this.group = group;
         this.keepOpen = keepOpen;
         this.hoverZone = hoverZone;
+        defaultItem = group.DefaultItem();
         leaveTimer.Tick += (_, _) => CheckLeave();
         s = Native.DpiAt(anchor) / 96f;
 
@@ -60,9 +64,15 @@ sealed class PopupForm : Form
         int w = Math.Max(pad * 2 + cols * cell.Width, (int)(220 * s));
         int h = header + pad + (n == 0 ? (int)(56 * s) : rows * cell.Height) + pad;
         Bounds = Place(new Size(w, h), anchor);
+        bottomUp = Bounds.Bottom <= anchor.Y;   // opened above the anchor (a bottom taskbar, or Preview)
         gearRect = new Rectangle(w - header, 0, header, header);
 
-        Ui.Tips.SetToolTip(this, "");
+        tipTimer.Tick += (_, _) =>
+        {
+            tipTimer.Stop();
+            if (tipText.Length == 0) return;
+            Ui.ShowTip(this, tipText, gearHover ? gearRect : hover >= 0 ? CellRect(hover) : ClientRectangle);
+        };
     }
 
     /// <summary>Opens beside the taskbar the anchor is on (above a bottom taskbar, and so on), centered
@@ -149,10 +159,14 @@ sealed class PopupForm : Form
         if (!keepOpen && !IsHover) Close();   // a hover pop-up closes by its leave check
     }
 
-    Rectangle CellRect(int i) => new(
-        pad + i % cols * cell.Width,
-        header + pad + i / cols * cell.Height,
-        cell.Width, cell.Height);
+    /// <summary>The first apps (the top of the group's list) sit on the row nearest the taskbar, where
+    /// the mouse comes from (Kurt, 0.6.4): above a bottom taskbar rows fill from the bottom up.</summary>
+    Rectangle CellRect(int i)
+    {
+        int row = i / cols;
+        if (bottomUp) row = rows - 1 - row;
+        return new(pad + i % cols * cell.Width, header + pad + row * cell.Height, cell.Width, cell.Height);
+    }
 
     int HitTest(Point p)
     {
@@ -203,6 +217,10 @@ sealed class PopupForm : Form
                     g.FillPath(brush, path);
             var iconRect = new Rectangle(r.X + (r.Width - iconPx) / 2, r.Y + (int)(10 * s), iconPx, iconPx);
             g.DrawImage(icons[i], iconRect);
+            if (ReferenceEquals(group.Items[i], defaultItem))
+                using (var star = new Font("Segoe UI Symbol", 11f * s, GraphicsUnit.Pixel))
+                    TextRenderer.DrawText(g, "★", star, new Point(r.Right - (int)(18 * s), r.Y + (int)(4 * s)),
+                        Color.FromArgb(255, 196, 64));
             var textRect = new Rectangle(r.X + (int)(4 * s), iconRect.Bottom + (int)(4 * s),
                 r.Width - (int)(8 * s), r.Bottom - iconRect.Bottom - (int)(6 * s));
             TextRenderer.DrawText(g, group.Items[i].Name, Font, textRect, Ui.Text,
@@ -223,8 +241,15 @@ sealed class PopupForm : Form
             Cursor = h >= 0 || gh ? Cursors.Hand : Cursors.Default;
             Invalidate();
         }
+        // One tip per cell, shown after the mouse rests there, next to the cell (Ui.ShowTip).
         string tip = gh ? "Edit this group" : h >= 0 ? Describe(group.Items[h]) : "";
-        if (tip != tipText) { tipText = tip; Ui.Tips.SetToolTip(this, tip); }
+        if (tip != tipText)
+        {
+            tipText = tip;
+            Ui.HideTip(this);
+            tipTimer.Stop();
+            if (tip.Length > 0) tipTimer.Start();
+        }
     }
 
     static string Describe(AppItem item) =>
@@ -233,6 +258,9 @@ sealed class PopupForm : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        tipTimer.Stop();
+        tipText = "";
+        Ui.HideTip(this);
         if (hover >= 0 || gearHover) { hover = -1; gearHover = false; Invalidate(); }
     }
 
@@ -255,8 +283,8 @@ sealed class PopupForm : Form
             case Keys.Enter: if (hover >= 0) Launch(hover); return;
             case Keys.Left: Move(-1); return;
             case Keys.Right: Move(1); return;
-            case Keys.Up: Move(-cols); return;
-            case Keys.Down: Move(cols); return;
+            case Keys.Up: Move(bottomUp ? cols : -cols); return;     // rows run upward when bottomUp
+            case Keys.Down: Move(bottomUp ? -cols : cols); return;
         }
         int digit = e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9 ? e.KeyCode - Keys.D1
                   : e.KeyCode >= Keys.NumPad1 && e.KeyCode <= Keys.NumPad9 ? e.KeyCode - Keys.NumPad1 : -1;
@@ -273,23 +301,9 @@ sealed class PopupForm : Form
     void Launch(int index)
     {
         var item = group.Items[index];
-        try
-        {
-            string path = Environment.ExpandEnvironmentVariables(item.Path);
-            var psi = new ProcessStartInfo(path) { UseShellExecute = true, Arguments = item.Arguments ?? "" };
-            string? dir = !string.IsNullOrWhiteSpace(item.WorkingDirectory) ? item.WorkingDirectory
-                        : File.Exists(path) ? Path.GetDirectoryName(path) : null;
-            if (dir != null) psi.WorkingDirectory = Environment.ExpandEnvironmentVariables(dir);
-            Process.Start(psi);
-            Close();
-        }
-        catch (Exception ex)
-        {
-            Hide();
-            MessageBox.Show($"Couldn't start \"{item.Name}\".\n\n{item.Path}\n\n{ex.Message}",
-                "Windows Taskbar Group", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            Close();
-        }
+        Hide();
+        item.StartOrReport();
+        Close();
     }
 
     void EditGroup()
@@ -300,7 +314,7 @@ sealed class PopupForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { icons.ForEach(i => i.Dispose()); leaveTimer.Dispose(); }
+        if (disposing) { icons.ForEach(i => i.Dispose()); leaveTimer.Dispose(); tipTimer.Dispose(); }
         base.Dispose(disposing);
     }
 }

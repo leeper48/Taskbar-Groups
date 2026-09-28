@@ -26,6 +26,14 @@ static class Program
         // Before any window: the pop-up belongs to the pinned button with the same ID.
         if (Arg(0) == "--group" && Arg(1) is { } gid)
         {
+            // A group with a default app: a click starts it (this process has the click's right to the
+            // foreground, which the app inherits). Shift+click opens the pop-up instead.
+            bool shift = (Native.GetAsyncKeyState(0x10 /* VK_SHIFT */) & 0x8000) != 0;
+            if (!shift && Store.Load().Find(gid)?.DefaultItem() is { } defaultApp)
+            {
+                Watcher.Send("close " + gid);   // a hover pop-up of this group is no longer needed
+                return defaultApp.StartOrReport() ? 0 : 1;
+            }
             // The hover helper already has everything loaded: hand the click over to it.
             if (Watcher.Send("click " + gid)) return 0;
             Native.SetCurrentProcessExplicitAppUserModelID(new Group { Id = gid }.AppId);
@@ -52,6 +60,34 @@ static class Program
                 using var mutex = new Mutex(true, Watcher.MutexName, out bool first);
                 if (!first || !Store.Load().Hover.Enabled) return 0;
                 Application.Run(new Watcher());
+                return 0;
+            }
+            case "--dump-icons":
+            {
+                // Diagnostic: each item's icon as the app loads it (48 and 256 px) plus its shortcut details.
+                var group = Store.Load().Groups.FirstOrDefault(g => g.Name == Arg(1) || g.Id == Arg(1));
+                string outDir = Arg(2) ?? throw new ArgumentException("--dump-icons <group> <dir>");
+                if (group == null) return 1;
+                Directory.CreateDirectory(outDir);
+                var report = new StringBuilder();
+                for (int i = 0; i < group.Items.Count; i++)
+                {
+                    var item = group.Items[i];
+                    foreach (int size in new[] { 48, 256 })
+                        using (var bmp = Icons.ForPath(item.Path, size))
+                        {
+                            bmp.Save(Path.Combine(outDir, $"{i}_{size}.png"), ImageFormat.Png);
+                            report.AppendLine($"{i} {item.Name} @{size}: {bmp.Width}x{bmp.Height} {bmp.PixelFormat}");
+                        }
+                    if (item.Path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase))
+                        try
+                        {
+                            var l = Shortcuts.Read(item.Path);
+                            report.AppendLine($"   target {l.Target} | icon {l.Icon} | appid {l.AppId}");
+                        }
+                        catch (Exception ex) { report.AppendLine("   (unreadable: " + ex.Message + ")"); }
+                }
+                File.WriteAllText(Path.Combine(outDir, "icons.txt"), report.ToString());
                 return 0;
             }
             case "--quit-helper":
@@ -112,12 +148,17 @@ static class SelfTest
                          Path.Combine(sys, "mspaint.exe"), Path.Combine(win, "explorer.exe"),
                          Path.Combine(sys, "cmd.exe"), win, Path.Combine(sys, "taskmgr.exe") })
                 tools.Items.Add(new AppItem { Name = SettingsForm.NameFor(p), Path = p });
+            tools.DefaultApp = tools.Items[2].Path;   // shows the default badge in the snapshots
             var empty = new Group { Name = "Games" };
             store.Groups.Add(tools);
             store.Groups.Add(empty);
             store.Save();
 
             var loaded = Store.Load();
+            Check(loaded.Groups[0].DefaultItem()?.Path == tools.Items[2].Path && loaded.Groups[1].DefaultItem() == null,
+                "default app saved and found: " + loaded.Groups[0].DefaultItem()?.Name);
+            var gone = new Group { Items = tools.Items.Take(2).ToList(), DefaultApp = tools.DefaultApp };
+            Check(gone.DefaultItem() == null, "a default app that left the group means no default (a click opens the pop-up)");
             Check(loaded.Groups.Count == 2 && loaded.Groups[0].Items.Count == tools.Items.Count, "groups.json saves and loads");
 
             var made = Shortcuts.Create(tools);
@@ -255,7 +296,11 @@ static class SelfTest
             Check(packaged.All(c => Native.ShellDisplayName(c.Path) != null) &&
                   running.All(c => !c.Path.Contains(@"\WindowsApps\", StringComparison.OrdinalIgnoreCase)),
                 $"packaged apps go through their app ID ({packaged.Count}: {string.Join(", ", packaged.Select(c => c.Name))})");
-            Check(pinned.All(c => c.CopyLink && File.Exists(c.Path)), $"taskbar pins: {pinned.Count}");
+            Check(pinned.All(c => (c.CopyLink && File.Exists(c.Path)) || c.PinnedAppId != null),
+                $"taskbar pins: {pinned.Count} ({pinned.Count(c => c.PinnedAppId != null)} kept outside the pinned folder: " +
+                string.Join(", ", pinned.Where(c => c.PinnedAppId != null).Select(c => c.Name)) + ")");
+            Check(pinned.Select(c => c.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() == pinned.Count,
+                "each pinned app listed once");
             if (pinned.Count > 0)
             {
                 var item = AppSources.ToItem(pinned[0]);
@@ -302,6 +347,32 @@ static class SelfTest
                 Check(inZone || hp.IsDisposed || !hp.Visible, inZone
                     ? "hover pop-up leave check skipped (the mouse is over the test pop-up)"
                     : "hover pop-up closes by itself when the mouse is elsewhere");
+            }
+
+            // Tooltips never cover their control: a button at the bottom of the screen gets its tip above it.
+            using (var tipForm = new Form { FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual })
+            {
+                var wa = Screen.PrimaryScreen.WorkingArea;
+                tipForm.Bounds = new Rectangle(wa.Left + 20, wa.Bottom - 40, 200, 40);
+                var tipButton = new Button { Text = "Bottom", Dock = DockStyle.Fill };
+                tipForm.Controls.Add(tipButton);
+                tipForm.Show();
+                Application.DoEvents();
+                Ui.ShowTip(tipButton, "A tooltip for a button at the bottom of the screen\nsecond line", tipButton.ClientRectangle);
+                for (int i = 0; i < 5; i++) { Application.DoEvents(); Thread.Sleep(20); }
+                var buttonRect = tipButton.RectangleToScreen(tipButton.ClientRectangle);
+                var tipRect = Rectangle.Empty;
+                uint me = (uint)Environment.ProcessId;
+                Native.EnumWindows((h, _) =>
+                {
+                    Native.GetWindowThreadProcessId(h, out uint pid);
+                    if (pid == me && Native.IsWindowVisible(h) && Native.ClassOf(h).Contains("tooltips_class32"))
+                        tipRect = Native.WindowRect(h);
+                    return true;
+                }, IntPtr.Zero);
+                Check(!tipRect.IsEmpty && !tipRect.IntersectsWith(buttonRect) && tipRect.Bottom <= buttonRect.Top,
+                    $"tooltip of a bottom-edge button sits above it (tip {tipRect}, button {buttonRect})");
+                Ui.HideTip(tipButton);
             }
 
             // Hover helper: one per data folder, starts, answers, refuses a second copy, quits.

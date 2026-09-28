@@ -9,6 +9,29 @@ sealed class AppItem
     public string Path { get; set; } = "";
     public string? Arguments { get; set; }
     public string? WorkingDirectory { get; set; }
+
+    /// <summary>Starts the item the way Explorer would (exe, shortcut, file, folder, shell:AppsFolder).</summary>
+    public void Start()
+    {
+        string path = Environment.ExpandEnvironmentVariables(Path);
+        var psi = new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true, Arguments = Arguments ?? "" };
+        string? dir = !string.IsNullOrWhiteSpace(WorkingDirectory) ? WorkingDirectory
+                    : System.IO.File.Exists(path) ? System.IO.Path.GetDirectoryName(path) : null;
+        if (dir != null) psi.WorkingDirectory = Environment.ExpandEnvironmentVariables(dir);
+        System.Diagnostics.Process.Start(psi);
+    }
+
+    /// <summary>Starts it; a failure is shown in a message box. Returns whether it started.</summary>
+    public bool StartOrReport()
+    {
+        try { Start(); return true; }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Couldn't start \"{Name}\".\n\n{Path}\n\n{ex.Message}",
+                "Windows Taskbar Group", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+    }
 }
 
 sealed class Group
@@ -17,6 +40,14 @@ sealed class Group
     public string Name { get; set; } = "New Group";
     public List<AppItem> Items { get; set; } = new();
     public GroupIcon Icon { get; set; } = new();
+
+    /// <summary>The Path of the item a click on the group's taskbar button starts (null = the click
+    /// opens the pop-up). Shift+click always opens the pop-up.</summary>
+    public string? DefaultApp { get; set; }
+
+    /// <summary>The default item, if it's still in the group.</summary>
+    public AppItem? DefaultItem() => DefaultApp == null ? null
+        : Items.FirstOrDefault(i => string.Equals(i.Path, DefaultApp, StringComparison.OrdinalIgnoreCase));
 
     public static string NewId() => Guid.NewGuid().ToString("N")[..8];
 
