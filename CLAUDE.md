@@ -87,6 +87,6 @@ Windows 11 has no supported API for custom taskbar items or flyouts, so:
 - Every `.bat` uses CRLF line endings and `goto`-based flow control (no multi-line parenthesized `if/else`).
 - UI labels in Title Case (Microsoft style); sentences, hints and status lines in sentence case. US English.
 - Every button gets a tooltip.
-- Git: commit straight to `main`, one commit per feature, only when Kurt asks. GitHub: `leeper48/Taskbar-Groups` (created 2026-09-28; `gh` isn't installed, so Kurt creates repos on github.com and Claude pushes).
+- Git: commit straight to `main`, one commit per feature, only when Kurt asks. GitHub: `leeper48/Taskbar-Groups` (created 2026-09-28; Kurt made it on github.com). `gh` **is** installed and logged in as leeper48 (keyring), just not on Claude's PATH: `C:\Program Files\GitHub CLI\gh.exe` (found 2026-09-28); Claude can create repos with it, asking public/private first.
 - Evidence before fixes; work in phases with a verified stopping point.
 - The antivirus quarantined freshly built DLLs in the MHO project until `C:\Dev\MHO-UPK-Tools` was excluded. This folder (`C:\Dev\WindowsTaskbarGroup`) isn't excluded yet.
