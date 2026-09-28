@@ -6,6 +6,8 @@ namespace WindowsTaskbarGroup;
 /// <summary>
 /// The group's pop-up: a borderless grid of the group's apps, opened next to the taskbar button that
 /// was clicked. A click (or Enter, or 1-9) starts an app; clicking elsewhere or Esc closes it.
+/// Opened by hover (<c>hoverZone</c> = the taskbar button), it doesn't take focus and closes once the
+/// mouse has been outside the button and the pop-up for 400 ms; a click on it keeps it open.
 /// </summary>
 sealed class PopupForm : Form
 {
@@ -19,17 +21,24 @@ sealed class PopupForm : Form
     int hover = -1;
     bool gearHover;
     string tipText = "";
+    Rectangle? hoverZone;
+    readonly System.Windows.Forms.Timer leaveTimer = new() { Interval = 50 };
+    DateTime lastInside = DateTime.Now;
 
-    public PopupForm(Group group, Point anchor, bool keepOpen = false)
+    public bool IsHover => hoverZone != null;
+
+    public PopupForm(Group group, Point anchor, bool keepOpen = false, Rectangle? hoverZone = null)
     {
         this.group = group;
         this.keepOpen = keepOpen;
+        this.hoverZone = hoverZone;
+        leaveTimer.Tick += (_, _) => CheckLeave();
         s = Native.DpiAt(anchor) / 96f;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        TopMost = true;
+        TopMost = hoverZone == null;   // hover: WS_EX_TOPMOST in CreateParams; the TopMost property raises Activated on Show
         KeyPreview = true;
         AutoScaleMode = AutoScaleMode.None;
         DoubleBuffered = true;
@@ -83,6 +92,7 @@ sealed class PopupForm : Form
         {
             var cp = base.CreateParams;
             cp.ExStyle |= 0x80;          // WS_EX_TOOLWINDOW: no Alt+Tab entry
+            if (IsHover) cp.ExStyle |= 0x8;   // WS_EX_TOPMOST
             cp.ClassStyle |= 0x20000;    // CS_DROPSHADOW
             return cp;
         }
@@ -95,10 +105,13 @@ sealed class PopupForm : Form
         Native.DwmInt(Handle, Native.DWMWA_BORDER_COLOR, Native.ColorRef(Ui.Line));
     }
 
+    protected override bool ShowWithoutActivation => IsHover;
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        Activate();
+        if (IsHover) leaveTimer.Start();
+        else Activate();
         if (Environment.GetEnvironmentVariable("TASKBARGROUP_TIMING") is { Length: > 0 } log)
         {
             var started = Process.GetCurrentProcess().StartTime;
@@ -106,10 +119,34 @@ sealed class PopupForm : Form
         }
     }
 
+    void CheckLeave()
+    {
+        if (hoverZone is not { } button) return;
+        var zone = Rectangle.Union(Bounds, Rectangle.Inflate(button, 4, 4));
+        if (zone.Contains(Cursor.Position)) lastInside = DateTime.Now;
+        else if ((DateTime.Now - lastInside).TotalMilliseconds > 400) Close();
+    }
+
+    /// <summary>Turns a hover pop-up into a clicked one: stays open and takes focus (closes on click-away).</summary>
+    public void PinOpen()
+    {
+        hoverZone = null;
+        leaveTimer.Stop();
+        Activate();
+    }
+
+    /// <summary>A real click on a hover pop-up keeps it open (WinForms' Activated fires on Show too, so
+    /// it can't be the signal: that kept every hover pop-up open, 0.4.0).</summary>
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (IsHover) PinOpen();
+    }
+
     protected override void OnDeactivate(EventArgs e)
     {
         base.OnDeactivate(e);
-        if (!keepOpen) Close();
+        if (!keepOpen && !IsHover) Close();   // a hover pop-up closes by its leave check
     }
 
     Rectangle CellRect(int i) => new(
@@ -263,7 +300,7 @@ sealed class PopupForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) icons.ForEach(i => i.Dispose());
+        if (disposing) { icons.ForEach(i => i.Dispose()); leaveTimer.Dispose(); }
         base.Dispose(disposing);
     }
 }

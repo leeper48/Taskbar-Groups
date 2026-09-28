@@ -18,6 +18,16 @@ sealed class SettingsForm : Form
     readonly Dictionary<string, Bitmap> iconCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, Bitmap> tileCache = new();
     readonly List<Control> needGroup = new();
+    readonly CheckBox hoverBox = new()
+    {
+        Text = "Open a group when the mouse rests on its taskbar button",
+        AutoSize = true, ForeColor = Ui.Text, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 4, 0, 0),
+    };
+    readonly NumericUpDown delayBox = new()
+    {
+        Minimum = 100, Maximum = 2000, Increment = 50, Width = 70,
+        BackColor = Ui.Field, ForeColor = Ui.Text, BorderStyle = BorderStyle.FixedSingle,
+    };
 
     public static string Title => "Windows Taskbar Group v" + Program.Version;
 
@@ -99,12 +109,35 @@ sealed class SettingsForm : Form
         };
         bar.Controls.Add(NeedsGroup(Ui.AccentButton("Pin to Taskbar…", PinToTaskbar,
             "Make the group's shortcut and show how to pin it to the taskbar")));
+        bar.Controls.Add(NeedsGroup(Ui.FlatButton("Change Icon…", ChangeIcon,
+            "Show the grid of apps, one app's icon, or your own picture on the group's taskbar button")));
         bar.Controls.Add(NeedsGroup(Ui.FlatButton("Preview", Preview, "Open the group's pop-up here, as a click on its taskbar button would")));
         bar.Controls.Add(Ui.FlatButton("Open Shortcut Folder", OpenShortcutFolder, "Open the folder with the groups' shortcuts"));
         bar.Controls.Add(status);
 
+        // Hover row (above the bottom bar)
+        var hoverRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom, AutoSize = true, Padding = new Padding(10, 6, 10, 2), WrapContents = false,
+        };
+        hoverBox.Checked = store.Hover.Enabled;
+        delayBox.Value = Math.Clamp(store.Hover.DelayMs, (int)delayBox.Minimum, (int)delayBox.Maximum);
+        delayBox.Enabled = hoverBox.Checked;
+        hoverBox.CheckedChanged += (_, _) => HoverChanged();
+        delayBox.ValueChanged += (_, _) => HoverChanged();
+        Ui.Tip(hoverBox, "Runs a small helper (tray icon) that opens a group's pop-up when the mouse rests on its taskbar button. It also starts when you sign in.");
+        Ui.Tip(delayBox, "How long the mouse must rest on a group's button before it opens (milliseconds)");
+        hoverRow.Controls.Add(hoverBox);
+        hoverRow.Controls.Add(new Label { Text = "Delay:", AutoSize = true, ForeColor = Ui.SubText, Margin = new Padding(16, 5, 4, 0) });
+        hoverRow.Controls.Add(delayBox);
+        hoverRow.Controls.Add(new Label { Text = "ms", AutoSize = true, ForeColor = Ui.SubText, Margin = new Padding(4, 5, 0, 0) });
+
         Controls.Add(main);
+        Controls.Add(hoverRow);
         Controls.Add(bar);
+
+        if (store.Hover.Enabled)
+            try { Watcher.EnsureRunning(); } catch { /* shown when toggled */ }
 
         ReloadGroups(selectId);
     }
@@ -154,12 +187,9 @@ sealed class SettingsForm : Form
 
     Bitmap Tile(Group g)
     {
-        string key = g.Id + "|" + g.Name + "|" + string.Join("|", g.Items.Take(4).Select(i => i.Path));
+        string key = Path.GetFileName(Shortcuts.IconFile(g));   // changes whenever the picture does
         if (!tileCache.TryGetValue(key, out var bmp))
-        {
-            var apps = g.Items.Take(4).Select(i => AppIcon(i.Path)).ToList();
-            tileCache[key] = bmp = Icons.GroupTile(apps, g.Name, 64);
-        }
+            tileCache[key] = bmp = Icons.GroupPicture(g, 64, AppIcon);
         return bmp;
     }
 
@@ -385,6 +415,32 @@ sealed class SettingsForm : Form
         Changed(g, j);
     }
 
+    // ---------- Hover ----------
+
+    void HoverChanged()
+    {
+        store.Hover.Enabled = hoverBox.Checked;
+        store.Hover.DelayMs = (int)delayBox.Value;
+        delayBox.Enabled = hoverBox.Checked;
+        try
+        {
+            store.Save();
+            if (hoverBox.Checked)
+            {
+                StartupLink.Create();
+                if (!Watcher.Send("reload")) Watcher.EnsureRunning();
+                SetStatus("Hover is on: rest the mouse on a pinned group's taskbar button.");
+            }
+            else
+            {
+                Watcher.Send("quit");
+                StartupLink.Remove();
+                SetStatus("Hover is off.");
+            }
+        }
+        catch (Exception ex) { SetStatus("Couldn't change hover: " + ex.Message); }
+    }
+
     // ---------- Shortcuts ----------
 
     void PinToTaskbar()
@@ -408,6 +464,27 @@ sealed class SettingsForm : Form
             "Changes you make to the group later update the shortcut. If the taskbar keeps showing an old " +
             "picture, unpin and pin it again.",
             "Pin to Taskbar", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    void ChangeIcon()
+    {
+        var g = Current;
+        if (g == null) return;
+        using var dlg = new IconPickerForm(g);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        try { dlg.Apply(); }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, "Couldn't use that picture:\n\n" + ex.Message, "Change Icon",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        Changed(g, appList.SelectedIndex >= 0 ? appList.SelectedIndex : null);
+        bool pinned = Directory.Exists(AppSources.PinnedDir) &&
+            Shortcuts.Find(AppSources.PinnedDir, g).Any();
+        SetStatus(pinned
+            ? "Icon changed. The pinned button was updated; if it still shows the old picture, unpin and pin it again."
+            : "Icon changed.");
     }
 
     void Preview()

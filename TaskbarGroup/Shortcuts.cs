@@ -31,7 +31,12 @@ static class Shortcuts
     /// path and Windows' icon cache can't keep showing the old picture.</summary>
     public static string IconFile(Group g)
     {
-        var key = g.Name + "\n" + string.Join("\n", g.Items.Take(4).Select(i => i.Path));
+        var key = Icons.EffectiveKind(g) switch
+        {
+            GroupIcon.App => "app\n" + g.Icon.AppPath,
+            GroupIcon.Custom => "custom\n" + g.Icon.File + "\n" + File.GetLastWriteTimeUtc(g.Icon.CustomPath!).Ticks,
+            _ => g.Name + "\n" + string.Join("\n", g.Items.Take(4).Select(i => i.Path)),
+        };
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..8].ToLowerInvariant();
         return Path.Combine(Store.IconsDir, $"{g.Id}-{hash}.ico");
     }
@@ -71,7 +76,34 @@ static class Shortcuts
             Write(file, exe, Arguments(g), Path.GetDirectoryName(exe)!, icon, g.AppId, "Open the " + g.Name + " group");
             made.Add(file);
         }
+        UpdatePinned(g, icon);
         return made;
+    }
+
+    /// <summary>
+    /// The taskbar keeps its own copy of a pinned shortcut (in the User Pinned\TaskBar folder), which
+    /// still points at the old picture. Rewrites that copy's icon, keeping its target, arguments and
+    /// AppUserModelID, then asks the shell to refresh icons. Whether the taskbar redraws at once is
+    /// for Kurt to confirm; unpin + pin always works. Skipped in test mode (that folder is real).
+    /// </summary>
+    static void UpdatePinned(Group g, string icon)
+    {
+        if (TestMode || !Directory.Exists(AppSources.PinnedDir)) return;
+        bool changed = false;
+        foreach (var f in Directory.GetFiles(AppSources.PinnedDir, "*.lnk"))
+        {
+            try
+            {
+                var info = Read(f);
+                if (info.Arguments != Arguments(g) || string.Equals(info.Icon, icon, StringComparison.OrdinalIgnoreCase)) continue;
+                Write(f, info.Target, info.Arguments, Path.GetDirectoryName(info.Target)!, icon, g.AppId,
+                    "Open the " + g.Name + " group");
+                Native.SHChangeNotify(0x00002000 /* SHCNE_UPDATEITEM */, 0x0005 /* SHCNF_PATHW */, f, IntPtr.Zero);
+                changed = true;
+            }
+            catch { /* leave that pin as it is */ }
+        }
+        if (changed) Native.SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0, IntPtr.Zero, IntPtr.Zero);
     }
 
     /// <summary>Refreshes shortcuts that already exist (after a rename or app change); makes none.</summary>
@@ -86,6 +118,9 @@ static class Shortcuts
             foreach (var f in Find(dir, g)) File.Delete(f);
         if (Directory.Exists(Store.IconsDir))
             foreach (var f in Directory.GetFiles(Store.IconsDir, g.Id + "-*.ico"))
+                try { File.Delete(f); } catch { }
+        if (Directory.Exists(GroupIcon.CustomDir))
+            foreach (var f in Directory.GetFiles(GroupIcon.CustomDir, g.Id + "-*"))
                 try { File.Delete(f); } catch { }
     }
 

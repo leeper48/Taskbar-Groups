@@ -15,6 +15,7 @@ static class Program
     /// No arguments: the settings window.
     /// --group &lt;id&gt;: the group's pop-up (what a pinned shortcut runs).
     /// --edit &lt;id&gt;: the settings window with that group selected.
+    /// --watch: the hover helper (tray icon; opens groups when the mouse rests on their buttons).
     /// --selftest &lt;scratch dir&gt;: shortcut, icon and rendering checks; report in selftest.txt.
     /// </summary>
     [STAThread]
@@ -24,7 +25,11 @@ static class Program
 
         // Before any window: the pop-up belongs to the pinned button with the same ID.
         if (Arg(0) == "--group" && Arg(1) is { } gid)
+        {
+            // The hover helper already has everything loaded: hand the click over to it.
+            if (Watcher.Send("click " + gid)) return 0;
             Native.SetCurrentProcessExplicitAppUserModelID(new Group { Id = gid }.AppId);
+        }
 
         ApplicationConfiguration.Initialize();
 
@@ -42,6 +47,16 @@ static class Program
                 Application.Run(new PopupForm(group, Cursor.Position));
                 return 0;
             }
+            case "--watch":
+            {
+                using var mutex = new Mutex(true, Watcher.MutexName, out bool first);
+                if (!first || !Store.Load().Hover.Enabled) return 0;
+                Application.Run(new Watcher());
+                return 0;
+            }
+            case "--quit-helper":
+                // Stops this data folder's hover helper (e.g. before a rebuild, which can't replace a running exe).
+                return Watcher.Send("quit") ? 0 : 1;
             case "--selftest":
                 return SelfTest.Run(Arg(1) ?? throw new ArgumentException("--selftest <scratch dir>"));
             default:
@@ -174,6 +189,50 @@ static class SelfTest
             }
             Check(File.Exists(Path.Combine(dir, "settings.png")), "settings window renders");
 
+            // Group icons: grid (default), one app, custom picture; every change gives a new icon file.
+            {
+                string gridIcon = Shortcuts.IconFile(tools);
+                tools.Icon = new GroupIcon { Kind = GroupIcon.App, AppPath = tools.Items[1].Path };
+                string appIconFile = Shortcuts.IconFile(tools);
+                Check(Icons.EffectiveKind(tools) == GroupIcon.App && appIconFile != gridIcon, "app icon choice gets its own icon file");
+                var without = new Group { Id = tools.Id, Name = tools.Name, Items = tools.Items.Skip(2).ToList(), Icon = tools.Icon };
+                Check(Icons.EffectiveKind(without) == GroupIcon.Grid, "a chosen app that left the group falls back to the grid");
+
+                string picture = Path.Combine(dir, "tile.png");
+                using (var picker = new IconPickerForm(tools))
+                {
+                    picker.StartPosition = FormStartPosition.Manual;
+                    picker.Location = Screen.PrimaryScreen.WorkingArea.Location;
+                    picker.Show();
+                    picker.Preview(0, picture);
+                    Application.DoEvents();
+                    Snap(picker, Path.Combine(dir, "icon_picker.png"));
+                    picker.Apply();
+                    picker.Close();
+                }
+                Check(Icons.EffectiveKind(tools) == GroupIcon.Custom && tools.Icon.File is { } f && !Path.IsPathRooted(f) &&
+                      File.ReadAllBytes(tools.Icon.CustomPath!).AsSpan().SequenceEqual(File.ReadAllBytes(picture)),
+                    "custom picture copied into data\\icons\\custom: " + tools.Icon.File);
+                store.Save();
+                Shortcuts.Refresh(tools);
+                var customLink = Shortcuts.Read(Directory.GetFiles(Store.ShortcutsDir, "*.lnk").Single());
+                Check(customLink.Icon == Shortcuts.IconFile(tools) && File.Exists(customLink.Icon) && customLink.Icon != gridIcon,
+                    "the shortcut uses the custom icon: " + Path.GetFileName(customLink.Icon));
+                using (var customTile = Icons.GroupPicture(tools, 256, p => Icons.ForPath(p, 256)))
+                    customTile.Save(Path.Combine(dir, "tile_custom.png"), ImageFormat.Png);
+
+                using (var picker = new IconPickerForm(tools))
+                {
+                    picker.Preview(0);   // back to the grid
+                    picker.Apply();
+                }
+                Check(tools.Icon.Kind == GroupIcon.Grid && Directory.GetFiles(GroupIcon.CustomDir).Length == 0,
+                    "back to the grid removes the unused custom picture");
+                Check(Shortcuts.IconFile(tools) == gridIcon, "and gives the grid's icon file again");
+                store.Save();
+                Shortcuts.Refresh(tools);
+            }
+
             // Add Apps sources
             var running = AppSources.Running();
             var pinned = AppSources.Pinned();
@@ -201,6 +260,59 @@ static class SelfTest
                 Check(!AppSources.InGroup(pinned[^1], tools) || pinned.Count == 1, "other pins don't");
                 tools.Items.Remove(item);
             }
+
+            // Hover: find group buttons on the real taskbar (read-only) and hit-test their centers.
+            var buttons = TaskbarButtons.All();
+            var groupButtons = buttons.Where(b => b.GroupId != null).ToList();
+            Check(buttons.Count > 0, $"taskbar buttons found: {buttons.Count}, groups among them: " +
+                (groupButtons.Count == 0 ? "none pinned" : string.Join(", ", groupButtons.Select(b => b.Name))));
+            var clock = Stopwatch.StartNew();
+            foreach (var b in groupButtons.Count > 0 ? groupButtons : buttons.Take(3).ToList())
+            {
+                var center = new Point(b.Bounds.X + b.Bounds.Width / 2, b.Bounds.Y + b.Bounds.Height / 2);
+                var hit = TaskbarButtons.At(center);
+                bool over = TaskbarButtons.OverTaskbar(center);
+                IntPtr under = Native.WindowFromPoint(new Native.POINT { X = center.X, Y = center.Y });
+                Check(over && hit?.AppId == b.AppId,
+                    $"hit test at {center} finds \"{b.Name}\" ({b.AppId}); over taskbar {over}, " +
+                    $"window {Native.ClassOf(under)} / root {Native.ClassOf(Native.GetAncestor(under, Native.GA_ROOT))}, hit {hit?.AppId ?? "none"}");
+            }
+            log.AppendLine($"      hit test average: {clock.ElapsedMilliseconds / Math.Max(1, Math.Max(groupButtons.Count, Math.Min(3, buttons.Count)))} ms");
+
+            // A hover pop-up must not take focus, and must close once the mouse is away from it and its button.
+            {
+                var wa = Screen.PrimaryScreen.WorkingArea;
+                var fakeButton = new Rectangle(wa.Right - 60, wa.Bottom - 4, 56, 4);   // bottom-right corner, away from the mouse
+                using var hp = new PopupForm(tools, new Point(fakeButton.X + 28, fakeButton.Bottom), hoverZone: fakeButton);
+                hp.Show();
+                for (int i = 0; i < 5; i++) { Application.DoEvents(); Thread.Sleep(20); }
+                IntPtr fg = Native.GetForegroundWindow();
+                Check(fg != hp.Handle, "hover pop-up doesn't take focus");
+                Check(hp.IsHover, "hover pop-up is still in hover mode after showing");
+                bool inZone = Rectangle.Union(hp.Bounds, fakeButton).Contains(Cursor.Position);
+                var until = DateTime.Now.AddSeconds(2);
+                while (!hp.IsDisposed && hp.Visible && DateTime.Now < until) { Application.DoEvents(); Thread.Sleep(20); }
+                Check(inZone || hp.IsDisposed || !hp.Visible, inZone
+                    ? "hover pop-up leave check skipped (the mouse is over the test pop-up)"
+                    : "hover pop-up closes by itself when the mouse is elsewhere");
+            }
+
+            // Hover helper: one per data folder, starts, answers, refuses a second copy, quits.
+            var hs = Store.Load();
+            hs.Hover.Enabled = true;
+            hs.Save();
+            Check(!Watcher.IsRunning, "no helper running for the scratch data folder yet");
+            using (var helper = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--watch") { UseShellExecute = false })!)
+            {
+                for (int i = 0; i < 100 && !Watcher.IsRunning; i++) Thread.Sleep(50);
+                Check(Watcher.IsRunning, "helper starts (window " + Watcher.WindowTitle + ")");
+                using (var second = Process.Start(new ProcessStartInfo(Environment.ProcessPath!, "--watch") { UseShellExecute = false })!)
+                    Check(second.WaitForExit(5000) && second.ExitCode == 0, "a second helper exits at once");
+                Check(Watcher.Send("reload"), "helper answers");
+                Watcher.Send("quit");
+                Check(helper.WaitForExit(5000), "helper quits when asked");
+            }
+            Check(!Watcher.Send("reload"), "nothing answers after it quit");
 
             foreach (var (taskbar, name) in new[] { (false, "add_running.png"), (true, "add_taskbar.png") })
             {

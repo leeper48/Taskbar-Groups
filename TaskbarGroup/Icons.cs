@@ -68,21 +68,8 @@ static class Icons
     /// (an empty group shows its first letter).</summary>
     public static Bitmap GroupTile(IReadOnlyList<Bitmap> appIcons, string name, int size)
     {
-        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
-        using var g = Graphics.FromImage(bmp);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-
-        float pad = Math.Max(0.5f, size * 0.04f);
-        var tile = new RectangleF(pad, pad, size - 2 * pad, size - 2 * pad);
-        using (var path = Rounded(tile, size * 0.22f))
-        {
-            using var fill = new SolidBrush(Color.FromArgb(235, 40, 40, 52));
-            g.FillPath(fill, path);
-            using var pen = new Pen(Ui.Accent, Math.Max(1f, size * 0.045f));
-            g.DrawPath(pen, path);
-        }
+        var bmp = FramedTile(size, out var g, out var tile);
+        using var disposeGraphics = g;
 
         if (appIcons.Count == 0)
         {
@@ -110,6 +97,80 @@ static class Icons
         return bmp;
     }
 
+    /// <summary>The frame every group picture shares: a dark rounded tile with the accent border.</summary>
+    static Bitmap FramedTile(int size, out Graphics g, out RectangleF tile)
+    {
+        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        float pad = Math.Max(0.5f, size * 0.04f);
+        tile = new RectangleF(pad, pad, size - 2 * pad, size - 2 * pad);
+        using var path = Rounded(tile, size * 0.22f);
+        using var fill = new SolidBrush(Color.FromArgb(235, 40, 40, 52));
+        g.FillPath(fill, path);
+        using var pen = new Pen(Ui.Accent, Math.Max(1f, size * 0.045f));
+        g.DrawPath(pen, path);
+        return bmp;
+    }
+
+    /// <summary>One picture (an app's icon or a custom image) inside the frame, fitted, aspect kept.</summary>
+    public static Bitmap ImageTile(Image image, int size)
+    {
+        var bmp = FramedTile(size, out var g, out _);
+        using var disposeGraphics = g;
+        float inner = size * (size >= 32 ? 0.17f : 0.13f);
+        float box = size - 2 * inner;
+        float scale = Math.Min(box / image.Width, box / image.Height);
+        float w = image.Width * scale, h = image.Height * scale;
+        g.DrawImage(image, new RectangleF(inner + (box - w) / 2, inner + (box - h) / 2, w, h));
+        return bmp;
+    }
+
+    /// <summary>What a group's picture actually shows: a chosen app that left the group, or a custom
+    /// file that's gone, falls back to the grid.</summary>
+    public static string EffectiveKind(Group group)
+    {
+        var c = group.Icon;
+        if (c.Kind == GroupIcon.App && c.AppPath != null &&
+            group.Items.Any(i => string.Equals(i.Path, c.AppPath, StringComparison.OrdinalIgnoreCase)))
+            return GroupIcon.App;
+        if (c.Kind == GroupIcon.Custom && c.CustomPath is { } p && File.Exists(p)) return GroupIcon.Custom;
+        return GroupIcon.Grid;
+    }
+
+    /// <summary>The group's picture at one size. <paramref name="appIcon"/> supplies app icons (the
+    /// caller owns them).</summary>
+    public static Bitmap GroupPicture(Group group, int size, Func<string, Bitmap> appIcon)
+    {
+        switch (EffectiveKind(group))
+        {
+            case GroupIcon.App:
+                return ImageTile(appIcon(group.Icon.AppPath!), size);
+            case GroupIcon.Custom:
+                using (var img = LoadImage(group.Icon.CustomPath!)) return ImageTile(img, size);
+            default:
+                return GroupTile(group.Items.Take(4).Select(i => appIcon(i.Path)).ToList(), group.Name, size);
+        }
+    }
+
+    public static readonly string[] ImageExtensions = { ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff" };
+
+    /// <summary>A custom picture: image files as they are; anything else (.ico, .exe, .dll, .lnk) as the
+    /// icon the shell shows for it, at 256 px.</summary>
+    public static Bitmap LoadImage(string path)
+    {
+        if (ImageExtensions.Contains(Path.GetExtension(path).ToLowerInvariant()))
+        {
+            using var fs = File.OpenRead(path);   // a copy, so the file isn't kept locked
+            using var img = Image.FromStream(fs);
+            return new Bitmap(img);
+        }
+        return ForPath(path, 256);
+    }
+
     public static GraphicsPath Rounded(RectangleF r, float radius)
     {
         float d = Math.Min(radius * 2, Math.Min(r.Width, r.Height));
@@ -127,14 +188,15 @@ static class Icons
     /// <summary>Renders the group's tile at every taskbar size and writes it as a PNG-framed .ico.</summary>
     public static void WriteGroupIcon(Group group, string file)
     {
-        var apps = group.Items.Take(4).Select(i => ForPath(i.Path, 256)).ToList();
+        var apps = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
+        Bitmap AppIcon(string path) => apps.TryGetValue(path, out var b) ? b : apps[path] = ForPath(path, 256);
         try
         {
-            var frames = IcoSizes.Select(s => GroupTile(apps, group.Name, s)).ToList();
+            var frames = IcoSizes.Select(s => GroupPicture(group, s, AppIcon)).ToList();
             try { WriteIco(file, frames); }
             finally { frames.ForEach(f => f.Dispose()); }
         }
-        finally { apps.ForEach(a => a.Dispose()); }
+        finally { foreach (var b in apps.Values) b.Dispose(); }
     }
 
     public static void WriteIco(string file, IReadOnlyList<Bitmap> frames)
