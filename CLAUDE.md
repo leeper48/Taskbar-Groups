@@ -79,6 +79,11 @@ Windows 11 has no supported API for custom taskbar items or flyouts, so:
 - A click on the pinned button (`--group <id>`) with a default and **no Shift** starts the default right in that process (it holds the click's foreground right) and sends `close <id>` to the helper, so an open hover pop-up of that group closes. Shift+click, or no default, goes the old way (helper `click`, or its own pop-up). Hover still shows all apps.
 - `AppItem.Start()` / `StartOrReport()` are the one way items are started (pop-up and click).
 
+## Releases
+
+- **v0.6.5 (2026-09-28), first public release:** https://github.com/leeper48/Taskbar-Groups/releases/tag/v0.6.5. Asset `Windows-Taskbar-Group-<ver>.zip` (folder "Windows Taskbar Group": TaskbarGroup.exe, LICENSE.txt, README.md; built fresh into `releases\stage` with `-p:DebugType=None`, so never Kurt's `data`) + `.zip.sha256`. Zipped with Python's zipfile (forward slashes; PowerShell 5.1's Compress-Archive writes backslashes). The staged exe passed `--selftest` before upload; the downloaded asset matched the checksum. Tags are plain `v<ver>` (the repo holds only this tool). Unsigned; README has "Why Windows may warn you" and Privacy.
+- README.md (repo root) with screenshots in `docs/` (self-test snapshots of a demo group, nothing personal). License MIT (same as MHO-UPK-Tools).
+
 ## Conventions (carried over from Kurt's other projects)
 
 - C# / .NET 8 (`net8.0-windows`), WinForms, x64. Sizes in code are for 100% scaling, multiplied by the window's DPI (`S()` in SettingsForm, `s` in PopupForm); WinForms auto-scaling left rows unscaled at 175%.
