@@ -32,17 +32,7 @@ static class AppSources
 
         void Consider(IntPtr h)
         {
-            if (!Native.IsWindowVisible(h) || Native.GetWindow(h, Native.GW_OWNER) != IntPtr.Zero) return;
-            long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
-            if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && (ex & Native.WS_EX_APPWINDOW) == 0) return;
-            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0) return;
-            var sb = new StringBuilder(512);
-            Native.GetClassName(h, sb, sb.Capacity);
-            if (ShellClasses.Contains(sb.ToString())) return;
-            sb.Clear();
-            Native.GetWindowText(h, sb, sb.Capacity);
-            string title = sb.ToString();
-            if (title.Length == 0) return;
+            if (!IsAppWindow(h, out string title)) return;
 
             Native.GetWindowThreadProcessId(h, out uint pid);
             string? exe = Native.ProcessPath(pid);
@@ -68,6 +58,24 @@ static class AppSources
         }
 
         return list.OrderBy(c => c.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+    }
+
+    /// <summary>A window the taskbar and Alt+Tab show for an app: visible, unowned, not a tool window,
+    /// not cloaked (another desktop, a suspended Store app), not the shell's own, with a title.</summary>
+    public static bool IsAppWindow(IntPtr h, out string title)
+    {
+        title = "";
+        if (!Native.IsWindowVisible(h) || Native.GetWindow(h, Native.GW_OWNER) != IntPtr.Zero) return false;
+        long ex = Native.GetWindowLongPtr(h, Native.GWL_EXSTYLE).ToInt64();
+        if ((ex & Native.WS_EX_TOOLWINDOW) != 0 && (ex & Native.WS_EX_APPWINDOW) == 0) return false;
+        if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0) return false;
+        var sb = new StringBuilder(512);
+        Native.GetClassName(h, sb, sb.Capacity);
+        if (ShellClasses.Contains(sb.ToString())) return false;
+        sb.Clear();
+        Native.GetWindowText(h, sb, sb.Capacity);
+        title = sb.ToString();
+        return title.Length > 0;
     }
 
     public static string PinnedDir => Path.Combine(

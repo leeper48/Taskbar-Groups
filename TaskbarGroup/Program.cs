@@ -32,7 +32,7 @@ static class Program
             if (!shift && Store.Load().Find(gid)?.DefaultItem() is { } defaultApp)
             {
                 Watcher.Send("close " + gid);   // a hover pop-up of this group is no longer needed
-                return defaultApp.StartOrReport() ? 0 : 1;
+                return Launcher.StartOrActivate(defaultApp) ? 0 : 1;
             }
             // The hover helper already has everything loaded: hand the click over to it.
             if (Watcher.Send("click " + gid)) return 0;
@@ -86,6 +86,7 @@ static class Program
                             report.AppendLine($"   target {l.Target} | icon {l.Icon} | appid {l.AppId}");
                         }
                         catch (Exception ex) { report.AppendLine("   (unreadable: " + ex.Message + ")"); }
+                    report.AppendLine("   running: " + (Launcher.FindWindow(item) is { } w ? "yes (window " + w + ")" : "no"));
                 }
                 File.WriteAllText(Path.Combine(outDir, "icons.txt"), report.ToString());
                 return 0;
@@ -347,6 +348,25 @@ static class SelfTest
                 Check(inZone || hp.IsDisposed || !hp.Visible, inZone
                     ? "hover pop-up leave check skipped (the mouse is over the test pop-up)"
                     : "hover pop-up closes by itself when the mouse is elsewhere");
+            }
+
+            // A running app is found instead of started again (read-only: nothing is activated here).
+            using (var runForm = new Form { Text = "Taskbar Group running-app test", ShowInTaskbar = true, StartPosition = FormStartPosition.Manual, Location = new Point(-3000, -3000), Size = new Size(200, 100) })
+            {
+                runForm.Show();
+                for (int i = 0; i < 5; i++) { Application.DoEvents(); Thread.Sleep(20); }
+                var self = new AppItem { Name = "self", Path = Environment.ProcessPath! };
+                Check(Launcher.FindWindow(self) == runForm.Handle, "a running app's window is found (this test's own window)");
+                Check(Launcher.FindWindow(new AppItem { Path = Environment.ProcessPath!, Arguments = "--x" }) == null,
+                    "an item with arguments always starts fresh");
+                Check(Launcher.FindWindow(new AppItem { Path = Environment.GetFolderPath(Environment.SpecialFolder.Windows) }) == null,
+                    "a folder always opens normally");
+                string selfLink = Path.Combine(dir, "self.lnk");
+                Shortcuts.Write(selfLink, Environment.ProcessPath!, "", dir, Environment.ProcessPath!, "WindowsTaskbarGroup.Test", "test");
+                Check(Launcher.FindWindow(new AppItem { Path = selfLink }) == runForm.Handle, "a shortcut to a running app finds it by its target");
+                var notFound = AppSources.Running().Where(c => Launcher.FindWindow(new AppItem { Path = c.Path }) == null).Select(c => c.Name).ToList();
+                Check(notFound.Count == 0, "every app under Running Apps is found as running" +
+                    (notFound.Count == 0 ? "" : ": missing " + string.Join(", ", notFound)));
             }
 
             // Tooltips never cover their control: a button at the bottom of the screen gets its tip above it.

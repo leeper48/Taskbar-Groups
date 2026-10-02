@@ -253,7 +253,8 @@ sealed class PopupForm : Form
     }
 
     static string Describe(AppItem item) =>
-        item.Name + "\n" + item.Path + (string.IsNullOrEmpty(item.Arguments) ? "" : " " + item.Arguments);
+        item.Name + "\n" + item.Path + (string.IsNullOrEmpty(item.Arguments) ? "" : " " + item.Arguments) +
+        "\nIf it's running, its window comes to the front. Shift+click opens a new copy.";
 
     protected override void OnMouseLeave(EventArgs e)
     {
@@ -302,7 +303,7 @@ sealed class PopupForm : Form
     {
         var item = group.Items[index];
         Hide();
-        item.StartOrReport();
+        Launcher.StartOrActivate(item, forceNew: (ModifierKeys & Keys.Shift) != 0);   // Shift = a new copy
         Close();
     }
 
